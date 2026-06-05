@@ -275,23 +275,29 @@ jobs:
           set -e
           echo "🔐 Start uploading APKs to Google Drive..."
 
-          echo "📁 Checking or creating AAPS folder"
+          echo "📁 Finding Diabetes folder"
+          DIABETES_FOLDER_ID=$(curl -s -X GET \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://www.googleapis.com/drive/v3/files?q=name='Diabetes'+and+mimeType='application/vnd.google-apps.folder'+and+trashed=false" \
+            | jq -r '.files[0].id')
+          echo "📂 Found Diabetes folder: $DIABETES_FOLDER_ID"
+
+          echo "📁 Checking or creating AAPS Builds folder inside Diabetes"
           AAPS_FOLDER_ID=$(curl -s -X GET \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
-            "https://www.googleapis.com/drive/v3/files?q=name='AAPS'+and+mimeType='application/vnd.google-apps.folder'+and+trashed=false" \
+            "https://www.googleapis.com/drive/v3/files?q=name='AAPS Builds'+and+mimeType='application/vnd.google-apps.folder'+and+'$DIABETES_FOLDER_ID'+in+parents+and+trashed=false" \
             | jq -r '.files[0].id')
 
           if [ "$AAPS_FOLDER_ID" == "null" ] || [ -z "$AAPS_FOLDER_ID" ]; then
             AAPS_FOLDER_ID=$(curl -s -X POST \
               -H "Authorization: Bearer $ACCESS_TOKEN" \
               -H "Content-Type: application/json" \
-              -d '{"name": "AAPS", "mimeType": "application/vnd.google-apps.folder"}' \
+              -d "{\"name\": \"AAPS Builds\", \"mimeType\": \"application/vnd.google-apps.folder\", \"parents\": [\"$DIABETES_FOLDER_ID\"]}" \
               "https://www.googleapis.com/drive/v3/files" | jq -r '.id')
-            echo "📂 Created AAPS folder: $AAPS_FOLDER_ID"
+            echo "📂 Created AAPS Builds folder: $AAPS_FOLDER_ID"
           else
-            echo "📂 Found AAPS folder: $AAPS_FOLDER_ID"
+            echo "📂 Found AAPS Builds folder: $AAPS_FOLDER_ID"
           fi
-
           echo "📁 Checking or creating version folder: $VERSION"
           VERSION_FOLDER_ID=$(curl -s -X GET \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
