@@ -138,8 +138,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/keystore"
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/keystore.jks"
-
-      - name: Validating keystore, alias and password
+         
+          - name: Validating keystore, alias and password
         run: |
           set -x
           echo "🔐 Validating keystore, alias and password"
