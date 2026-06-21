@@ -119,11 +119,22 @@ jobs:
 
           echo "✅ All required secrets are present."
 
-      - name: Check Secrets
-        run: |
-          echo "🔍 Checking required secrets..."
-          ...
-          echo "✅ All required secrets are present."- name: Decode keystore file
+      - name: Notify -- build starting
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "🔵 AAPS build starting -- ${{ github.event.inputs.tagName }} (${{ github.event.inputs.buildVariant }})"
+          to: shaymccallum@gmail.com
+          from: "Bennett's AAPS Builder <${{ secrets.EMAIL_USERNAME }}>"
+          body: |
+            Build started for AndroidAPS version ${{ github.event.inputs.tagName }}, variant ${{ github.event.inputs.buildVariant }}.
+
+            You'll get a second email when the APK is ready in your Google Drive "Diabetes/AAPS Builds" folder.
+
+      - name: Decode keystore file
         run: |
           mkdir -p "$RUNNER_TEMP/keystore"
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/keystore.jks"
@@ -160,226 +171,3 @@ jobs:
       - name: Decode GDrive OAuth2 secrets
         run: |
           echo "🔐 Decoding GDRIVE_OAUTH2..."
-          DECODED=$(echo "${{ secrets.GDRIVE_OAUTH2 }}" | base64 -d)
-
-          GDRIVE_CLIENT_ID=$(echo "$DECODED" | cut -d'|' -f1)
-          GDRIVE_REFRESH_TOKEN=$(echo "$DECODED" | cut -d'|' -f2)
-
-          echo "::add-mask::$GDRIVE_CLIENT_ID"
-          echo "::add-mask::$GDRIVE_REFRESH_TOKEN"
-
-          echo "GDRIVE_CLIENT_ID=$GDRIVE_CLIENT_ID" >> $GITHUB_ENV
-          echo "GDRIVE_REFRESH_TOKEN=$GDRIVE_REFRESH_TOKEN" >> $GITHUB_ENV
-
-          echo "✅ GDRIVE_CLIENT_ID and GDRIVE_REFRESH_TOKEN extracted from GDRIVE_OAUTH2"
-
-      - name: Retrieving Google Drive access token
-        run: |
-          echo "🔐 Getting Google OAuth2 access token..."
-          TOKEN_RESPONSE=$(curl -s -X POST https://oauth2.googleapis.com/token \
-            -d client_id="$GDRIVE_CLIENT_ID" \
-            -d refresh_token="$GDRIVE_REFRESH_TOKEN" \
-            -d grant_type=refresh_token)
-          ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r .access_token)
-          echo "::add-mask::$ACCESS_TOKEN"
-          if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" = "null" ]; then
-            echo "❌ Failed to get access token."
-            echo "$TOKEN_RESPONSE"
-            exit 1
-          fi
-          echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> $GITHUB_ENV
-          echo "✅ Access token obtained."
-
-      - name: Checkout source code at tag
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: Fetch selected tag from upstream
-        run: |
-          git remote add upstream https://github.com/nightscout/AndroidAPS.git || true
-          git fetch upstream refs/tags/${{ github.event.inputs.tagName }}:refs/tags/${{ github.event.inputs.tagName }}
-          echo "✅ Tag ${{ github.event.inputs.tagName }} fetched from upstream."
-
-      - name: Determine JVM version from tag
-        run: |
-          # jdk-map.json must be read before switching to the upstream tag,
-          # as the upstream tag does not contain this file.
-          TAG="${{ github.event.inputs.tagName }}"
-          JAVA_VERSION=$(jq -r '.default' .github/jdk-map.json)
-          while IFS=$'\t' read -r pattern jdk; do
-            if [[ "$TAG" == $pattern ]]; then
-              JAVA_VERSION="$jdk"
-              break
-            fi
-          done < <(jq -r '.mappings[] | "\(.pattern)\t\(.jdk)"' .github/jdk-map.json)
-          echo "JAVA_VERSION=$JAVA_VERSION" >> $GITHUB_ENV
-          echo "ℹ️ Tag $TAG → JDK $JAVA_VERSION (from jdk-map.json)"
-
-      - name: Switch to selected tag
-        run: |
-          git checkout refs/tags/${{ github.event.inputs.tagName }}
-          echo "✅ Checked out tag ${{ github.event.inputs.tagName }}"
-
-      - name: Set BUILD_VARIANT
-        run: |
-          BUILD_VARIANT="${{ github.event.inputs.buildVariant }}"
-          echo "BUILD_VARIANT=$BUILD_VARIANT" >> $GITHUB_ENV
-          VARIANT_FLAVOR=$(echo "$BUILD_VARIANT" | sed -E 's/(Release|Debug)$//' | tr '[:upper:]' '[:lower:]')
-          VARIANT_TYPE=$(echo "$BUILD_VARIANT" | grep -oE '(Release|Debug)$' | tr '[:upper:]' '[:lower:]')
-          echo "VARIANT_FLAVOR=$VARIANT_FLAVOR" >> $GITHUB_ENV
-          echo "VARIANT_TYPE=$VARIANT_TYPE" >> $GITHUB_ENV
-          VERSION_SUFFIX=""
-          if [[ "$VARIANT_FLAVOR" != "full" ]]; then VERSION_SUFFIX="$VARIANT_FLAVOR"; fi
-          if [[ "$VARIANT_TYPE" == "debug" ]]; then VERSION_SUFFIX="$VERSION_SUFFIX-debug"; fi
-          if [[ -n "$VERSION_SUFFIX" && "$VERSION_SUFFIX" != -* ]]; then VERSION_SUFFIX="-$VERSION_SUFFIX"; fi
-          echo "VERSION_SUFFIX=$VERSION_SUFFIX" >> $GITHUB_ENV
-
-      - name: Extract VERSION
-        run: |
-          BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
-          if echo "$BRANCH_NAME" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
-            VERSION="$BRANCH_NAME"
-          else
-            VERSION=$(grep 'val appVersion' buildSrc/src/main/kotlin/Versions.kt | awk -F '"' '{print $2}')
-          fi
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-
-      - name: Set up JDK
-        uses: actions/setup-java@v5
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: 'temurin'
-          cache: gradle
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Build APKs
-        run: |
-              ./gradlew :app:assemble${{ env.BUILD_VARIANT }} :wear:assemble${{ env.BUILD_VARIANT }} \
-              -Dorg.gradle.jvmargs="-Xmx8g -XX:+UseParallelGC -Xss1024m" \
-              -Dkotlin.daemon.jvm.options="-Xmx2g" \
-              -Dkotlin.compiler.execution.strategy="in-process" \
-              -Dorg.gradle.daemon=true \
-              -Dorg.gradle.workers.max=8 \
-              -Dorg.gradle.caching=true \
-              -Pandroid.injected.signing.store.file="$RUNNER_TEMP/keystore/keystore.jks" \
-              -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
-              -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
-              -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
-
-      - name: Rename APKs with version
-        run: |
-          mv app/build/outputs/apk/${{ env.VARIANT_FLAVOR }}/${{ env.VARIANT_TYPE }}/*.apk aaps-${{ env.VERSION }}${{ env.VERSION_SUFFIX }}.apk
-          mv wear/build/outputs/apk/${{ env.VARIANT_FLAVOR }}/${{ env.VARIANT_TYPE }}/*.apk aaps-wear-${{ env.VERSION }}${{ env.VERSION_SUFFIX }}.apk
-
-      - name: Upload APKs to Google Drive
-        run: |
-          set -e
-          echo "🔐 Start uploading APKs to Google Drive..."
-
-          echo "📁 Finding Diabetes folder"
-          DIABETES_FOLDER_ID=$(curl -s -X GET \
-            -H "Authorization: Bearer $ACCESS_TOKEN" \
-            "https://www.googleapis.com/drive/v3/files?q=name='Diabetes'+and+mimeType='application/vnd.google-apps.folder'+and+trashed=false" \
-            | jq -r '.files[0].id')
-          echo "📂 Found Diabetes folder: $DIABETES_FOLDER_ID"
-
-          echo "📁 Checking or creating AAPS Builds folder inside Diabetes"
-          AAPS_FOLDER_ID=$(curl -s -X GET \
-            -H "Authorization: Bearer $ACCESS_TOKEN" \
-            "https://www.googleapis.com/drive/v3/files?q=name='AAPS Builds'+and+mimeType='application/vnd.google-apps.folder'+and+'$DIABETES_FOLDER_ID'+in+parents+and+trashed=false" \
-            | jq -r '.files[0].id')
-
-          if [ "$AAPS_FOLDER_ID" == "null" ] || [ -z "$AAPS_FOLDER_ID" ]; then
-            AAPS_FOLDER_ID=$(curl -s -X POST \
-              -H "Authorization: Bearer $ACCESS_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "{\"name\": \"AAPS Builds\", \"mimeType\": \"application/vnd.google-apps.folder\", \"parents\": [\"$DIABETES_FOLDER_ID\"]}" \
-              "https://www.googleapis.com/drive/v3/files" | jq -r '.id')
-            echo "📂 Created AAPS Builds folder: $AAPS_FOLDER_ID"
-          else
-            echo "📂 Found AAPS Builds folder: $AAPS_FOLDER_ID"
-          fi
-          echo "📁 Checking or creating version folder: $VERSION"
-          VERSION_FOLDER_ID=$(curl -s -X GET \
-            -H "Authorization: Bearer $ACCESS_TOKEN" \
-            "https://www.googleapis.com/drive/v3/files?q=name='${VERSION}'+and+mimeType='application/vnd.google-apps.folder'+and+'$AAPS_FOLDER_ID'+in+parents+and+trashed=false" \
-            | jq -r '.files[0].id')
-
-          if [ "$VERSION_FOLDER_ID" == "null" ] || [ -z "$VERSION_FOLDER_ID" ]; then
-            VERSION_FOLDER_ID=$(curl -s -X POST \
-              -H "Authorization: Bearer $ACCESS_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "{\"name\": \"${VERSION}\", \"mimeType\": \"application/vnd.google-apps.folder\", \"parents\": [\"$AAPS_FOLDER_ID\"]}" \
-              "https://www.googleapis.com/drive/v3/files" | jq -r '.id')
-            echo "📂 Created version folder: $VERSION_FOLDER_ID"
-          else
-            echo "📂 Found version folder: $VERSION_FOLDER_ID"
-          fi
-
-          upload_to_gdrive() {
-            FILE=$1
-            NAME=$2
-            if [ ! -f "$FILE" ]; then
-              echo "❌ File not found: $FILE"
-              exit 26
-            fi
-
-            echo "📄 Checking if file $NAME already exists in Google Drive..."
-            QUERY="name='${NAME}' and '${VERSION_FOLDER_ID}' in parents and trashed=false"
-            ENCODED_QUERY=$(python3 -c "import urllib.parse; print(urllib.parse.quote('''$QUERY'''))")
-            FILE_ID=$(curl -s \
-              -H "Authorization: Bearer $ACCESS_TOKEN" \
-              "https://www.googleapis.com/drive/v3/files?q=${ENCODED_QUERY}&fields=files(id)" \
-              | jq -r '.files[0].id')
-
-            if [[ -n "$FILE_ID" && "$FILE_ID" != "null" ]]; then
-              echo "🗑️ Deleting existing file with ID: $FILE_ID"
-              curl -s -X DELETE \
-                -H "Authorization: Bearer $ACCESS_TOKEN" \
-                "https://www.googleapis.com/drive/v3/files/${FILE_ID}"
-            fi
-
-            echo "⬆️ Uploading $FILE as $NAME to Google Drive..."
-            RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/gdrive_response.json \
-              -X POST \
-              -H "Authorization: Bearer $ACCESS_TOKEN" \
-              -F "metadata={\"name\":\"$NAME\", \"parents\":[\"$VERSION_FOLDER_ID\"]};type=application/json;charset=UTF-8" \
-              -F "file=@$FILE;type=application/vnd.android.package-archive" \
-              "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
-
-            HTTP_CODE="${RESPONSE: -3}"
-            if [[ "$HTTP_CODE" != "200" && "$HTTP_CODE" != "201" ]]; then
-              echo "❌ Upload failed with HTTP status: $HTTP_CODE"
-              cat /tmp/gdrive_response.json
-              exit 1
-            fi
-
-            echo "✅ Uploaded: $NAME"
-          }
-
-          upload_to_gdrive "aaps-${VERSION}${VERSION_SUFFIX}.apk" "aaps-${VERSION}${VERSION_SUFFIX}.apk"
-          upload_to_gdrive "aaps-wear-${VERSION}${VERSION_SUFFIX}.apk" "aaps-wear-${VERSION}${VERSION_SUFFIX}.apk"
-
-          echo "🎉 APKs successfully uploaded to Google Drive!"
-
-- name: Notify -- build finished
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          username: ${{ secrets.EMAIL_USERNAME }}
-          password: ${{ secrets.EMAIL_PASSWORD }}
-          subject: "✅ AAPS build ready -- ${{ env.VERSION }}${{ env.VERSION_SUFFIX }}"
-          to: shaymccallum@gmail.com
-          from: "Bennett's AAPS Builder <${{ secrets.EMAIL_USERNAME }}>"
-          body: |
-            The APK for AndroidAPS version ${{ env.VERSION }}${{ env.VERSION_SUFFIX }} is ready.
-
-            Find it in your Google Drive under: Diabetes / AAPS Builds / ${{ env.VERSION }}
-
-            Files uploaded:
-              - aaps-${{ env.VERSION }}${{ env.VERSION_SUFFIX }}.apk
-              - aaps-wear-${{ env.VERSION }}${{ env.VERSION_SUFFIX }}.apk
