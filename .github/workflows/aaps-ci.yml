@@ -119,7 +119,11 @@ jobs:
 
           echo "✅ All required secrets are present."
 
-      - name: Decode keystore file
+      - name: Check Secrets
+        run: |
+          echo "🔍 Checking required secrets..."
+          ...
+          echo "✅ All required secrets are present."- name: Decode keystore file
         run: |
           mkdir -p "$RUNNER_TEMP/keystore"
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/keystore.jks"
@@ -360,3 +364,22 @@ jobs:
           upload_to_gdrive "aaps-wear-${VERSION}${VERSION_SUFFIX}.apk" "aaps-wear-${VERSION}${VERSION_SUFFIX}.apk"
 
           echo "🎉 APKs successfully uploaded to Google Drive!"
+
+- name: Notify -- build finished
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "✅ AAPS build ready -- ${{ env.VERSION }}${{ env.VERSION_SUFFIX }}"
+          to: shaymccallum@gmail.com
+          from: "Bennett's AAPS Builder <${{ secrets.EMAIL_USERNAME }}>"
+          body: |
+            The APK for AndroidAPS version ${{ env.VERSION }}${{ env.VERSION_SUFFIX }} is ready.
+
+            Find it in your Google Drive under: Diabetes / AAPS Builds / ${{ env.VERSION }}
+
+            Files uploaded:
+              - aaps-${{ env.VERSION }}${{ env.VERSION_SUFFIX }}.apk
+              - aaps-wear-${{ env.VERSION }}${{ env.VERSION_SUFFIX }}.apk
