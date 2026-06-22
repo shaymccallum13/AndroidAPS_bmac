@@ -1,0 +1,68 @@
+name: Check for New AAPS Release
+
+on:
+  schedule:
+    - cron: '0 13 * * *'   # runs once a day at 13:00 UTC (about 9am Eastern / 6am Pacific)
+  workflow_dispatch: {}     # lets you also run this manually from the Actions tab, to test it
+
+jobs:
+  check-and-trigger:
+    name: Check upstream and trigger build if new
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: true
+
+      - name: Get latest release tag from upstream AndroidAPS
+        id: latest
+        run: |
+          echo "Checking nightscout/AndroidAPS for the latest release..."
+          RESPONSE=$(curl -s -H "Accept: application/vnd.github+json" https://api.github.com/repos/nightscout/AndroidAPS/releases/latest)
+          TAG=$(echo "$RESPONSE" | jq -r '.tag_name')
+          # Strip a leading "v" in case upstream tags releases like "v3.4.2.3" instead of "3.4.2.3"
+          TAG="${TAG#v}"
+          if [ -z "$TAG" ] || [ "$TAG" == "null" ]; then
+            echo "Could not read the latest release tag from GitHub."
+            echo "$RESPONSE"
+            exit 1
+          fi
+          echo "Latest upstream release is: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Read last built tag
+        id: last
+        run: |
+          if [ -f .github/last-built-tag.txt ]; then
+            LAST=$(cat .github/last-built-tag.txt)
+          else
+            LAST=""
+          fi
+          echo "Last tag we already built: $LAST"
+          echo "tag=$LAST" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger build if there's a new release
+        if: steps.latest.outputs.tag != steps.last.outputs.tag
+        env:
+          NEW_TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          echo "New release detected: $NEW_TAG (previously built: ${{ steps.last.outputs.tag }})"
+          echo "$NEW_TAG" > .github/last-built-tag.txt
+          git config user.name "AAPS Build Bot"
+          git config user.email "actions@github.com"
+          git add .github/last-built-tag.txt
+          git commit -m "Mark $NEW_TAG as the latest tracked AndroidAPS release"
+          git push
+          echo "Triggering aaps-ci.yml build for $NEW_TAG"
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/aaps-ci.yml/dispatches" \
+            -d "{\"ref\":\"main\",\"inputs\":{\"tagName\":\"$NEW_TAG\",\"buildVariant\":\"fullRelease\"}}"
+
+      - name: No new release
+        if: steps.latest.outputs.tag == steps.last.outputs.tag
+        run: echo "No new release since last check (still on ${{ steps.last.outputs.tag }})."
